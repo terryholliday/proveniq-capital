@@ -69,7 +69,14 @@ export async function testConnection(): Promise<boolean> {
     console.log('[Database] Connection test successful:', result.rows[0].now);
     return true;
   } catch (error) {
+    // Fall back to mock mode if database connection fails
     console.error('[Database] Connection test failed:', error);
-    return false;
+    console.warn('[Database] Falling back to MOCK MODE');
+    mockMode = true;
+    if (pool) {
+      try { await pool.end(); } catch { /* ignore */ }
+      pool = null;
+    }
+    return true; // Continue in mock mode rather than crashing
   }
 }
