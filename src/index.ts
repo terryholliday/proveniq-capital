@@ -14,7 +14,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 // Database
-import { getPool, testConnection, closePool } from './database';
+import { getPool, testConnection, closePool, isMockMode } from './database';
 
 // Core services
 import { LedgerService, LedgerRepository } from './core/ledger';
@@ -42,19 +42,24 @@ async function bootstrap(): Promise<void> {
     process.exit(1);
   }
 
-  // Get database pool
+  // Get database pool (null in mock mode)
   const pool = getPool();
+  
+  if (isMockMode()) {
+    console.warn('[Boot] ⚠️  RUNNING IN MOCK MODE - No database connected');
+    console.warn('[Boot] ⚠️  All data is in-memory and will be lost on restart');
+  }
 
-  // Initialize repositories
+  // Initialize repositories (handle null pool for mock mode)
   console.log('[Boot] Initializing repositories...');
-  const ledgerRepository = new LedgerRepository(pool);
-  const treasuryRepository = new TreasuryRepository(pool);
-  const payoutRepository = new PayoutRepository(pool);
+  const ledgerRepository = pool ? new LedgerRepository(pool) : null;
+  const treasuryRepository = pool ? new TreasuryRepository(pool) : null;
+  const payoutRepository = pool ? new PayoutRepository(pool) : null;
 
-  // Initialize core services
+  // Initialize core services (pass null repos for mock mode - services handle it)
   console.log('[Boot] Initializing core services...');
-  const ledgerService = new LedgerService(ledgerRepository);
-  const treasuryService = new TreasuryService(treasuryRepository, ledgerService);
+  const ledgerService = new LedgerService(ledgerRepository as any);
+  const treasuryService = new TreasuryService(treasuryRepository as any, ledgerService);
 
   // Initialize payment adapters
   console.log('[Boot] Initializing payment adapters...');
@@ -63,7 +68,7 @@ async function bootstrap(): Promise<void> {
 
   // Initialize payout service
   const payoutService = new PayoutService(
-    payoutRepository,
+    payoutRepository as any,
     ledgerService,
     treasuryService,
     stripeAdapter,
@@ -80,7 +85,7 @@ async function bootstrap(): Promise<void> {
   // Initialize claims listener
   console.log('[Boot] Initializing claims listener...');
   const claimsListener = new ClaimsListenerService(
-    ledgerRepository,
+    ledgerRepository as any,
     payoutService,
     {
       claimsIqBaseUrl: process.env.CLAIMSIQ_BASE_URL || 'http://localhost:3000',
@@ -100,7 +105,12 @@ async function bootstrap(): Promise<void> {
 
   // Health check (public)
   app.get('/health', (_req, res) => {
-    res.json({ status: 'OK', service: 'proveniq-capital', timestamp: new Date().toISOString() });
+    res.json({ 
+      status: 'OK', 
+      service: 'proveniq-capital', 
+      mode: isMockMode() ? 'MOCK' : 'LIVE',
+      timestamp: new Date().toISOString() 
+    });
   });
 
   // Stripe webhook route (CRITICAL: Must use raw body for signature verification)
