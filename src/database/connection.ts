@@ -26,20 +26,28 @@ export function getPool(): Pool | null {
       return null;
     }
 
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    });
+    try {
+      pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+        ssl: { rejectUnauthorized: false }, // Required for Supabase
+      });
 
-    pool.on('error', (err) => {
-      console.error('[Database] Unexpected error on idle client:', err);
-    });
+      pool.on('error', (err) => {
+        console.error('[Database] Unexpected error on idle client:', err);
+      });
 
-    pool.on('connect', () => {
-      console.log('[Database] New client connected');
-    });
+      pool.on('connect', () => {
+        console.log('[Database] New client connected');
+      });
+    } catch (error) {
+      console.error('[Database] Failed to create pool:', error);
+      console.warn('[Database] Falling back to MOCK MODE');
+      mockMode = true;
+      return null;
+    }
   }
 
   return pool;
