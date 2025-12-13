@@ -252,9 +252,13 @@ export function createAdminRoutes(
       res.json({
         valid: report.valid,
         transaction_count: report.transaction_count,
-        total_debits: report.total_debits.toString(),
-        total_credits: report.total_credits.toString(),
+        global_sum: report.global_sum.toString(),
         balanced: report.balanced,
+        account_balances: report.account_balances.map(b => ({
+          account: b.account,
+          currency: b.currency,
+          balance_micros: b.balance_micros.toString(),
+        })),
         errors: report.errors,
         verified_at: report.verified_at,
       });
@@ -277,11 +281,12 @@ export function createAdminRoutes(
         entry_count: entries.length,
         entries: entries.map(e => ({
           id: e.id,
-          account_type: e.account_type,
-          entry_type: e.entry_type,
-          amount: e.amount.toString(),
+          account: e.account,
+          amount_micros: e.amount_micros.toString(),
           currency: e.currency,
+          reference_type: e.reference_type,
           created_at: e.created_at,
+          memo: e.memo,
         })),
       });
     } catch (error) {

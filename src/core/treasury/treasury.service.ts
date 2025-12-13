@@ -19,7 +19,7 @@ export class TreasuryService {
 
   constructor(
     private readonly repository: TreasuryRepository,
-    private readonly ledger: LedgerService
+    _ledger: LedgerService
   ) {
     this.config = {
       manual_approval_threshold: BigInt(process.env.MANUAL_APPROVAL_THRESHOLD_CENTS || '1000000'),
@@ -35,7 +35,7 @@ export class TreasuryService {
   async checkLiquidity(
     poolId: string,
     amount: bigint,
-    currency: 'USD' | 'USDC'
+    _currency: 'USD' | 'USDC'
   ): Promise<LiquidityCheckResult> {
     const pool = await this.repository.getPool(poolId);
 

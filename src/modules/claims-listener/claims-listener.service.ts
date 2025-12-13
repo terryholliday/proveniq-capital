@@ -30,7 +30,7 @@ export class ClaimsListenerService {
   constructor(
     private readonly ledgerRepository: LedgerRepository,
     private readonly payoutService: PayoutService,
-    private readonly config: ClaimsListenerConfig
+    config: ClaimsListenerConfig
   ) {
     this.client = axios.create({
       baseURL: config.claimsIqBaseUrl,

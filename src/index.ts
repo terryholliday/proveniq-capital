@@ -24,10 +24,9 @@ import { TreasuryService, TreasuryRepository } from './core/treasury';
 import { ClaimsListenerService } from './modules/claims-listener';
 import { PayoutService, PayoutRepository, StripeAdapter, USDCAdapter } from './modules/payouts';
 import { StripeIngressService } from './modules/premiums';
-import { RemittanceService } from './modules/remittance';
 
 // API
-import { createAdminRoutes, createWebhookRoutes, createStripeWebhookRoutes, createRemittanceRoutes, adminAuthMiddleware, webhookAuthMiddleware } from './api';
+import { createAdminRoutes, createWebhookRoutes, createStripeWebhookRoutes, adminAuthMiddleware, webhookAuthMiddleware } from './api';
 
 async function bootstrap(): Promise<void> {
   console.log('='.repeat(60));
@@ -78,10 +77,6 @@ async function bootstrap(): Promise<void> {
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || 'whsec_placeholder',
   });
 
-  // Initialize Remittance Service (Pool-specific funds from Bids)
-  console.log('[Boot] Initializing remittance service...');
-  const remittanceService = new RemittanceService(ledgerService);
-
   // Initialize claims listener
   console.log('[Boot] Initializing claims listener...');
   const claimsListener = new ClaimsListenerService(
@@ -119,9 +114,6 @@ async function bootstrap(): Promise<void> {
   // Webhook routes (signature-verified)
   app.use('/webhooks', webhookAuthMiddleware, createWebhookRoutes(claimsListener));
 
-  // Remittance route (Bids -> Capital pool-specific funds)
-  app.use('/api/v1/remittance', createRemittanceRoutes({ remittanceService }));
-
   // Admin routes (API key protected)
   app.use('/admin', adminAuthMiddleware, createAdminRoutes(treasuryService, ledgerService, payoutService));
 
@@ -140,7 +132,6 @@ async function bootstrap(): Promise<void> {
     console.log(`  - Health: http://localhost:${port}/health`);
     console.log(`  - Webhooks: http://localhost:${port}/webhooks/claimsiq`);
     console.log(`  - Stripe Webhook: http://localhost:${port}/api/v1/webhooks/stripe`);
-    console.log(`  - Remittance: http://localhost:${port}/api/v1/remittance`);
     console.log(`  - Admin: http://localhost:${port}/admin/*`);
   });
 

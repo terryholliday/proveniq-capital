@@ -13,27 +13,22 @@ import {
   PayoutTransaction,
   PayoutRequest,
   PayoutResult,
-  PayoutStatus,
   PayoutRail,
 } from '../../shared/types';
 import { LedgerService } from '../../core/ledger';
 import { TreasuryService } from '../../core/treasury';
 import { PayoutRepository } from './payout.repository';
-import { StripeAdapter } from './adapters/stripe.adapter';
+import { BankGateway } from './bank.port';
 import { USDCAdapter } from './adapters/usdc.adapter';
 
 export class PayoutService {
-  private readonly manualApprovalThreshold: bigint;
-
   constructor(
     private readonly repository: PayoutRepository,
     private readonly ledger: LedgerService,
     private readonly treasury: TreasuryService,
-    private readonly stripeAdapter: StripeAdapter,
+    private readonly stripeAdapter: BankGateway,
     private readonly usdcAdapter: USDCAdapter
-  ) {
-    this.manualApprovalThreshold = BigInt(process.env.MANUAL_APPROVAL_THRESHOLD_CENTS || '1000000');
-  }
+  ) {}
 
   /**
    * Initiate a payout for an approved claim
@@ -117,8 +112,8 @@ export class PayoutService {
       };
     }
 
-    // Record claim approved in ledger
-    await this.ledger.recordClaimApproved(
+    // Record claim payout in ledger
+    await this.ledger.recordClaimPayout(
       request.claim_id,
       request.amount,
       request.currency,
@@ -133,14 +128,6 @@ export class PayoutService {
       const result = await this.executePayoutViaRail(payout);
 
       if (result.success) {
-        // Record claim paid in ledger
-        await this.ledger.recordClaimPaid(
-          request.claim_id,
-          request.amount,
-          request.currency,
-          'SYSTEM'
-        );
-
         // Release the lock
         await this.treasury.releaseLock(lock.id);
 
@@ -151,7 +138,7 @@ export class PayoutService {
           success: true,
           payout_id: payoutId,
           status: 'CLEARED',
-          tx_hash: result.tx_hash,
+          tx_hash: result.tx_hash ?? null,
         };
       } else {
         // Return funds to pool
@@ -211,17 +198,16 @@ export class PayoutService {
       return { success: false, payout_id: payoutId, status: 'FAILED', tx_hash: null, error: 'Insufficient liquidity' };
     }
 
-    await this.ledger.recordClaimApproved(payout.claim_id, payout.amount, payout.currency, approvedBy);
+    await this.ledger.recordClaimPayout(payout.claim_id, payout.amount, payout.currency, approvedBy);
     await this.repository.updateStatus(payoutId, 'PROCESSING');
 
     try {
       const result = await this.executePayoutViaRail(payout);
 
       if (result.success) {
-        await this.ledger.recordClaimPaid(payout.claim_id, payout.amount, payout.currency, approvedBy);
         await this.treasury.releaseLock(lock.id);
         await this.repository.markCleared(payoutId, result.tx_hash || '');
-        return { success: true, payout_id: payoutId, status: 'CLEARED', tx_hash: result.tx_hash };
+        return { success: true, payout_id: payoutId, status: 'CLEARED', tx_hash: result.tx_hash ?? null };
       } else {
         await this.treasury.releaseLock(lock.id);
         await this.repository.updateStatus(payoutId, 'FAILED', result.error);
@@ -276,23 +262,33 @@ export class PayoutService {
    * Execute payout via the appropriate adapter
    */
   private async executePayoutViaRail(payout: PayoutTransaction): Promise<{ success: boolean; tx_hash?: string; error?: string }> {
-    switch (payout.rail) {
-      case 'STRIPE':
-        return this.stripeAdapter.transfer(
-          payout.recipient_address,
-          payout.amount,
-          payout.idempotency_key
-        );
+    const instruction = {
+      recipient_did: payout.recipient_did,
+      recipient_address: payout.recipient_address,
+      amount_micros: payout.amount,
+      currency: payout.currency as 'USD' | 'USDC',
+      reference_id: payout.claim_id,
+      memo: `Payout for claim ${payout.claim_id}`,
+    };
 
-      case 'USDC':
-        return this.usdcAdapter.transfer(
-          payout.recipient_address,
-          payout.amount,
-          payout.idempotency_key
-        );
+    switch (payout.rail) {
+      case 'STRIPE': {
+        const result = await this.stripeAdapter.transfer(instruction);
+        if (result.success) {
+          return { success: true, tx_hash: result.value.tx_hash };
+        }
+        return { success: false, error: result.error };
+      }
+
+      case 'USDC': {
+        const result = await this.usdcAdapter.transfer(instruction);
+        if (result.success) {
+          return { success: true, tx_hash: result.value.tx_hash };
+        }
+        return { success: false, error: result.error };
+      }
 
       case 'WIRE':
-        // Wire transfers always require manual processing
         return { success: false, error: 'Wire transfers require manual processing' };
 
       default:

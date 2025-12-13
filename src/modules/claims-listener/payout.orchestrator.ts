@@ -11,7 +11,7 @@
 import { ClaimsAdapter, DecisionRecord, MockClaimsAdapter, RetryableError } from './claims.adapter';
 import { LedgerService, TransactionManifest } from '../../core/ledger';
 import { LedgerEntry } from '../../shared/types';
-import { BankGateway, PaymentInstruction, TransferReceipt, LimitExceededError } from '../payouts/bank.port';
+import { BankGateway, PaymentInstruction, LimitExceededError } from '../payouts/bank.port';
 import { StripeAdapter } from '../payouts/stripe.mock';
 
 /**

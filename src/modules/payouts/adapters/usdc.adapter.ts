@@ -5,7 +5,15 @@
  * In production: integrate with Circle API or direct blockchain interaction
  */
 
-export class USDCAdapter {
+import {
+  BankGateway,
+  PaymentInstruction,
+  TransferReceipt,
+  GatewayResult,
+} from '../bank.port';
+
+export class USDCAdapter implements BankGateway {
+  readonly name = 'USDC';
   private readonly enabled: boolean;
   private readonly network: string;
 
@@ -19,64 +27,75 @@ export class USDCAdapter {
   /**
    * Transfer USDC to a wallet address
    */
-  async transfer(
-    walletAddress: string,
-    amountMicros: bigint,
-    idempotencyKey: string
-  ): Promise<{ success: boolean; tx_hash?: string; error?: string }> {
+  async transfer(instruction: PaymentInstruction): Promise<GatewayResult<TransferReceipt>> {
+    const { recipient_address } = instruction;
+
     // Validate wallet address format
-    if (!this.isValidAddress(walletAddress)) {
+    if (!this.isValidAddress(recipient_address)) {
       return {
         success: false,
         error: 'Invalid wallet address format',
+        retryable: false,
       };
     }
 
     if (this.enabled) {
-      return this.mockTransfer(walletAddress, amountMicros, idempotencyKey);
+      return this.mockTransfer(instruction);
     }
 
     // In production: implement actual USDC transfer
-    // Options:
-    // 1. Circle API (https://developers.circle.com/)
-    // 2. Direct blockchain interaction via ethers.js
-    // 3. Custodial wallet service
-
     return {
       success: false,
       error: 'USDC transfers not yet implemented in production mode',
+      retryable: false,
+    };
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return this.enabled;
+  }
+
+  async getTransferStatus(txHash: string): Promise<GatewayResult<TransferReceipt>> {
+    return {
+      success: false,
+      error: `Transfer status lookup not implemented: ${txHash}`,
+      retryable: false,
     };
   }
 
   /**
    * Mock transfer for development/testing
    */
-  private mockTransfer(
-    walletAddress: string,
-    amountMicros: bigint,
-    idempotencyKey: string
-  ): { success: boolean; tx_hash?: string; error?: string } {
-    console.log(`[USDCAdapter] MOCK transfer: ${amountMicros} micros to ${walletAddress}`);
-
-    // Simulate network delay
-    // In real implementation, this would be async blockchain confirmation
+  private mockTransfer(instruction: PaymentInstruction): GatewayResult<TransferReceipt> {
+    const { recipient_address, recipient_did, amount_micros, currency, reference_id } = instruction;
+    
+    console.log(`[USDCAdapter] MOCK transfer: ${amount_micros} micros to ${recipient_address}`);
 
     // Simulate occasional failures
-    if (walletAddress.toLowerCase().includes('fail')) {
+    if (recipient_address.toLowerCase().includes('fail')) {
       return {
         success: false,
         error: 'Mock failure: wallet marked for failure',
+        retryable: false,
       };
     }
 
     // Generate mock transaction hash
-    const mockTxHash = `0x${this.generateMockTxHash(idempotencyKey)}`;
+    const mockTxHash = `0x${this.generateMockTxHash(reference_id)}`;
 
     console.log(`[USDCAdapter] MOCK tx hash: ${mockTxHash}`);
 
     return {
       success: true,
-      tx_hash: mockTxHash,
+      value: {
+        tx_hash: mockTxHash,
+        gateway: this.name,
+        amount_micros,
+        currency,
+        recipient_did,
+        processed_at: new Date(),
+        status: 'CLEARED',
+      },
     };
   }
 
