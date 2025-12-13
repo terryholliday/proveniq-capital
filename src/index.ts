@@ -124,6 +124,7 @@ async function bootstrap(): Promise<void> {
       status: 'OK', 
       service: 'proveniq-capital', 
       mode: isMockMode() ? 'MOCK' : 'LIVE',
+      database_url_set: !!process.env.DATABASE_URL,
       timestamp: new Date().toISOString() 
     });
   });
