@@ -23,9 +23,11 @@ import { TreasuryService, TreasuryRepository } from './core/treasury';
 // Modules
 import { ClaimsListenerService } from './modules/claims-listener';
 import { PayoutService, PayoutRepository, StripeAdapter, USDCAdapter } from './modules/payouts';
+import { StripeIngressService } from './modules/premiums';
+import { RemittanceService } from './modules/remittance';
 
 // API
-import { createAdminRoutes, createWebhookRoutes, adminAuthMiddleware, webhookAuthMiddleware } from './api';
+import { createAdminRoutes, createWebhookRoutes, createStripeWebhookRoutes, createRemittanceRoutes, adminAuthMiddleware, webhookAuthMiddleware } from './api';
 
 async function bootstrap(): Promise<void> {
   console.log('='.repeat(60));
@@ -69,6 +71,17 @@ async function bootstrap(): Promise<void> {
     usdcAdapter
   );
 
+  // Initialize Stripe Ingress (Premium Collection)
+  console.log('[Boot] Initializing Stripe ingress service...');
+  const stripeIngress = new StripeIngressService({
+    secretKey: process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || 'whsec_placeholder',
+  });
+
+  // Initialize Remittance Service (Pool-specific funds from Bids)
+  console.log('[Boot] Initializing remittance service...');
+  const remittanceService = new RemittanceService(ledgerService);
+
   // Initialize claims listener
   console.log('[Boot] Initializing claims listener...');
   const claimsListener = new ClaimsListenerService(
@@ -95,8 +108,19 @@ async function bootstrap(): Promise<void> {
     res.json({ status: 'OK', service: 'proveniq-capital', timestamp: new Date().toISOString() });
   });
 
+  // Stripe webhook route (CRITICAL: Must use raw body for signature verification)
+  // Mount BEFORE express.json() middleware or use express.raw() for this route
+  app.use(
+    '/api/v1/webhooks',
+    express.raw({ type: 'application/json' }),
+    createStripeWebhookRoutes({ stripeIngress, ledger: ledgerService })
+  );
+
   // Webhook routes (signature-verified)
   app.use('/webhooks', webhookAuthMiddleware, createWebhookRoutes(claimsListener));
+
+  // Remittance route (Bids -> Capital pool-specific funds)
+  app.use('/api/v1/remittance', createRemittanceRoutes({ remittanceService }));
 
   // Admin routes (API key protected)
   app.use('/admin', adminAuthMiddleware, createAdminRoutes(treasuryService, ledgerService, payoutService));
@@ -115,6 +139,8 @@ async function bootstrap(): Promise<void> {
     console.log('[Boot] Endpoints:');
     console.log(`  - Health: http://localhost:${port}/health`);
     console.log(`  - Webhooks: http://localhost:${port}/webhooks/claimsiq`);
+    console.log(`  - Stripe Webhook: http://localhost:${port}/api/v1/webhooks/stripe`);
+    console.log(`  - Remittance: http://localhost:${port}/api/v1/remittance`);
     console.log(`  - Admin: http://localhost:${port}/admin/*`);
   });
 

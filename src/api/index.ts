@@ -4,4 +4,6 @@
 
 export { createAdminRoutes } from './routes/admin.routes';
 export { createWebhookRoutes } from './routes/webhook.routes';
+export { createStripeWebhookRoutes, StripeWebhookDependencies } from './routes/stripe-webhook.routes';
+export { createRemittanceRoutes, RemittanceDependencies } from './routes/remittance.routes';
 export { adminAuthMiddleware, webhookAuthMiddleware } from './middleware/auth.middleware';

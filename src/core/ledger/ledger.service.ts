@@ -119,7 +119,13 @@ export class LedgerService {
     };
 
     // Persist atomically (INSERT only - never UPDATE)
-    await this.repository.saveTransaction(transaction);
+    if (this.repository) {
+      await this.repository.saveTransaction(transaction);
+    } else {
+      // In-memory mode
+      IN_MEMORY_TRANSACTIONS.push(transaction);
+      ledgerEntries.forEach(e => IN_MEMORY_LEDGER.push(e));
+    }
 
     return transaction;
   }
@@ -246,7 +252,7 @@ export class LedgerService {
     reason: string,
     createdBy: string
   ): Promise<LedgerTransaction> {
-    const original = await this.repository.getTransactionById(originalTransactionId);
+    const original = await this.getTransactionById(originalTransactionId);
     if (!original) {
       throw new LedgerError('NOT_FOUND', `Transaction ${originalTransactionId} not found`);
     }
@@ -259,7 +265,6 @@ export class LedgerService {
 
     const currency = original.entries[0]?.currency || 'USD';
     const referenceId = original.entries[0]?.reference_id || originalTransactionId;
-    const referenceType = original.entries[0]?.reference_type || 'ADJUSTMENT';
 
     return this.recordTransaction(
       reversedEntries,
@@ -279,6 +284,18 @@ export class LedgerService {
     account: AccountType,
     currency: Currency
   ): Promise<AccountBalance> {
+    if (!this.repository) {
+      // In-memory mode: compute from entries
+      const entries = IN_MEMORY_LEDGER.filter(e => e.account === account && e.currency === currency);
+      const balance = entries.reduce((acc, e) => acc + e.amount_micros, 0n);
+      return {
+        account,
+        currency,
+        balance_micros: balance,
+        last_entry_id: entries[entries.length - 1]?.id || '',
+        last_updated: entries[entries.length - 1]?.created_at || new Date(),
+      };
+    }
     return this.repository.computeAccountBalance(account, currency);
   }
 
@@ -286,6 +303,9 @@ export class LedgerService {
    * Get all entries for a reference (policy or claim)
    */
   async getEntriesByReference(referenceId: string): Promise<LedgerEntry[]> {
+    if (!this.repository) {
+      return IN_MEMORY_LEDGER.filter(e => e.reference_id === referenceId);
+    }
     return this.repository.getEntriesByReference(referenceId);
   }
 
@@ -293,6 +313,9 @@ export class LedgerService {
    * Get transaction by ID
    */
   async getTransactionById(transactionId: string): Promise<LedgerTransaction | null> {
+    if (!this.repository) {
+      return IN_MEMORY_TRANSACTIONS.find(t => t.id === transactionId) || null;
+    }
     return this.repository.getTransactionById(transactionId);
   }
 
@@ -301,7 +324,9 @@ export class LedgerService {
    * Checks that all transactions sum to zero
    */
   async verifyLedgerIntegrity(): Promise<LedgerIntegrityReport> {
-    const allTransactions = await this.repository.getAllTransactions();
+    const allTransactions = this.repository 
+      ? await this.repository.getAllTransactions()
+      : IN_MEMORY_TRANSACTIONS;
     const errors: string[] = [];
     let totalSum = 0n;
 
@@ -319,7 +344,9 @@ export class LedgerService {
     }
 
     // Compute account balances
-    const balances = await this.repository.getAllAccountBalances();
+    const balances = this.repository 
+      ? await this.repository.getAllAccountBalances()
+      : [];
 
     return {
       valid: errors.length === 0,

@@ -2,6 +2,10 @@
 
 **Algorithmic Central Bank for Proveniq Insurance Pools**
 
+> Proveniq Capital is a settlement and treasury engine only.  
+> It executes payouts and manages pooled funds based on external decisions.  
+> It does not adjudicate claims, liquidate assets, recover funds, or operate marketplaces.
+
 ## Overview
 
 Proveniq Capital is the autonomous underwriting and settlement engine that powers the Proveniq ecosystem. It is not a wallet — it is financial infrastructure that:
