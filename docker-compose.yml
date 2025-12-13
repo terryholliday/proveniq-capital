@@ -1,0 +1,51 @@
+# ============================================
+# PROVENIQ ECOSYSTEM - DOCKER COMPOSE
+# The Algorithmic Insurance Stack
+# ============================================
+# 
+# NETWORK TOPOLOGY:
+# - ClaimsIQ (Port 3000): THE BRAIN - The Adjudicator
+# - Capital (Port 3001): THE BANK - The Treasury
+#
+# USAGE:
+#   docker-compose up -d
+#   docker-compose logs -f capital
+#
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============================================
+  # THE BRAIN - CLAIMSIQ
+  # ============================================
+  claimsiq:
+    # Point this to your ../claimsiq folder relative path, OR use pre-built image
+    # ADJUST build context as needed if building locally
+    image: proveniq/claimsiq:latest
+    container_name: claimsiq
+    ports:
+      - "3000:3000"
+    networks:
+      - proveniq_net
+
+  # ============================================
+  # THE BANK - CAPITAL
+  # ============================================
+  capital:
+    build: .
+    container_name: capital
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      # Capital talks to ClaimsIQ via the internal container name
+      - CLAIMSIQ_API_URL=http://claimsiq:3000/api/v1/claims
+    depends_on:
+      - claimsiq
+    networks:
+      - proveniq_net
+
+networks:
+  proveniq_net:
+    driver: bridge
