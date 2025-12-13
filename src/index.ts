@@ -103,6 +103,21 @@ async function bootstrap(): Promise<void> {
   app.use(cors());
   app.use(express.json());
 
+  // Root route
+  app.get('/', (_req, res) => {
+    res.json({ 
+      service: 'Proveniq Capital',
+      description: 'Settlement and Treasury Engine',
+      version: '1.0.0',
+      mode: isMockMode() ? 'MOCK' : 'LIVE',
+      endpoints: {
+        health: '/health',
+        admin: '/admin (API key required)',
+        webhooks: '/webhooks (signature required)',
+      }
+    });
+  });
+
   // Health check (public)
   app.get('/health', (_req, res) => {
     res.json({ 
