@@ -176,7 +176,7 @@ export interface VerificationStatus {
   /** ISO timestamp of verification */
   verifiedAt: string;
   /** How verification was performed */
-  verifiedBy: 'SYSTEM' | 'MANUAL';
+  verifiedBy: 'SYSTEM' | 'MANUAL' | 'PROVENIQ_CORE' | 'LOCAL_FALLBACK';
   /** Any verification errors or warnings */
   notes?: string;
 }

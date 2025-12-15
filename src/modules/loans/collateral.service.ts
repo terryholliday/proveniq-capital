@@ -110,23 +110,39 @@ export class CollateralService {
    * Generate Optical Genome from collateral photos
    */
   private async generateGenome(photos: CollateralPhotos): Promise<GenomeData> {
-    // TODO: Integrate with Genome service
-    // This would call the HOME/Genome API to generate feature vectors
+    const CORE_URL = process.env.PROVENIQ_CORE_URL || 'http://localhost:3000';
     
-    const genomeResponse = await this.callGenomeService({
-      photos: [
-        photos.front,
-        photos.back,
-        ...photos.conditionDetails,
-      ],
-    });
+    try {
+      const response = await fetch(`${CORE_URL}/api/v1/genome/vectorize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photos: [photos.front, photos.back, ...photos.conditionDetails]
+        })
+      });
 
-    return {
-      hash: genomeResponse.hash,
-      vector: genomeResponse.vector,
-      generatedAt: new Date().toISOString(),
-      modelVersion: genomeResponse.modelVersion,
-    };
+      if (!response.ok) {
+        throw new Error(`Core Genome Service Error: ${response.statusText}`);
+      }
+
+      const result = await response.json() as { data: { hash: string; vector: number[]; generatedAt: string; modelVersion: string } };
+      
+      return {
+        hash: result.data.hash,
+        vector: result.data.vector,
+        generatedAt: result.data.generatedAt,
+        modelVersion: result.data.modelVersion,
+      };
+    } catch (error) {
+      console.error('[COLLATERAL] Genome Generation Failed:', error);
+      // Fallback for dev/demo if Core is offline
+      return {
+        hash: `mock_hash_${Date.now()}`,
+        vector: [],
+        generatedAt: new Date().toISOString(),
+        modelVersion: 'offline_fallback',
+      };
+    }
   }
 
   /**
@@ -207,7 +223,7 @@ export class CollateralService {
   // --------------------------------------------------------------------------
 
   /**
-   * Verify identifiers against external databases
+   * Verify identifiers against external databases via Proveniq Core
    */
   private async verifyIdentifiers(
     assetClass: AssetClass,
@@ -218,9 +234,40 @@ export class CollateralService {
       genomeGenerated: true,
       ownershipVerified: false,
       verifiedAt: new Date().toISOString(),
-      verifiedBy: 'SYSTEM',
+      verifiedBy: 'PROVENIQ_CORE',
     };
 
+    const CORE_URL = process.env.PROVENIQ_CORE_URL || 'http://localhost:3000';
+
+    try {
+      // Delegate to Proveniq Core Identity Engine
+      const response = await fetch(`${CORE_URL}/api/v1/identity/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetClass, identifiers })
+      });
+
+      if (response.ok) {
+        const result = await response.json() as { data: { verified: boolean; source?: string; issues?: string[] } };
+        const { data } = result;
+        
+        verification.identifierVerified = data.verified;
+        verification.identifierSource = data.source as any;
+        
+        if (data.issues && data.issues.length > 0) {
+          verification.notes = data.issues.join('; ');
+        }
+        
+        return verification;
+      }
+      
+      // Fallback to local verification if Core is unavailable
+      console.warn('[COLLATERAL] Core Identity API unavailable, falling back to local verification');
+    } catch (error) {
+      console.error('[COLLATERAL] Core Identity API error:', error);
+    }
+
+    // Fallback: Local verification logic
     try {
       switch (assetClass) {
         case 'ELECTRONICS_PHONE':
@@ -230,6 +277,7 @@ export class CollateralService {
             verification.identifierVerified = result.valid;
             verification.identifierSource = result.source;
             verification.notes = result.notes;
+            verification.verifiedBy = 'LOCAL_FALLBACK';
           }
           break;
 
@@ -241,6 +289,7 @@ export class CollateralService {
             );
             verification.identifierVerified = result.valid;
             verification.identifierSource = 'CHRONO24';
+            verification.verifiedBy = 'LOCAL_FALLBACK';
           }
           break;
 
@@ -249,6 +298,7 @@ export class CollateralService {
             const result = await this.verifyGIACert(identifiers.giaCertNumber);
             verification.identifierVerified = result.valid;
             verification.identifierSource = 'GIA';
+            verification.verifiedBy = 'LOCAL_FALLBACK';
           }
           break;
 
@@ -258,6 +308,7 @@ export class CollateralService {
             verification.identifierVerified = result.valid;
             verification.identifierSource = 'NMVTIS';
             verification.notes = result.titleStatus;
+            verification.verifiedBy = 'LOCAL_FALLBACK';
           }
           break;
 
@@ -269,11 +320,11 @@ export class CollateralService {
             );
             verification.identifierVerified = result.valid;
             verification.identifierSource = identifiers.gradingService;
+            verification.verifiedBy = 'LOCAL_FALLBACK';
           }
           break;
 
         default:
-          // For asset classes without external verification
           verification.notes = 'No external verification available for this asset class';
       }
     } catch (error) {
@@ -420,6 +471,78 @@ export class CollateralService {
     collateral.updatedAt = new Date().toISOString();
 
     await this.saveCollateral(collateral);
+  }
+
+  // --------------------------------------------------------------------------
+  // PROVENANCE-BASED RISK ASSESSMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Get provenance score from Proveniq Core for loan risk assessment
+   * Higher provenance = lower risk = better loan terms
+   */
+  async getProvenanceRiskAssessment(params: {
+    photoCount: number;
+    receiptCount: number;
+    warrantyCount: number;
+    genomeVerified: boolean;
+    ownershipTransfers: number;
+    documentedValue: number;
+  }): Promise<{
+    provenanceScore: number;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    ltvAdjustment: number;
+    fraudFlags: string[];
+  }> {
+    const CORE_URL = process.env.PROVENIQ_CORE_URL || 'http://localhost:3000';
+
+    try {
+      const response = await fetch(`${CORE_URL}/api/v1/provenance/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...params,
+          lastVerifiedAt: new Date().toISOString(),
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json() as { data: { score: number; fraudFlags?: string[] } };
+        const { data } = result;
+        
+        // Map provenance score to risk level and LTV adjustment
+        let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+        let ltvAdjustment: number;
+        
+        if (data.score >= 80) {
+          riskLevel = 'LOW';
+          ltvAdjustment = 0.05; // +5% LTV bonus for excellent provenance
+        } else if (data.score >= 60) {
+          riskLevel = 'MEDIUM';
+          ltvAdjustment = 0;
+        } else {
+          riskLevel = 'HIGH';
+          ltvAdjustment = -0.10; // -10% LTV penalty for poor provenance
+        }
+
+        return {
+          provenanceScore: data.score,
+          riskLevel,
+          ltvAdjustment,
+          fraudFlags: data.fraudFlags || [],
+        };
+      }
+    } catch (error) {
+      console.error('[COLLATERAL] Provenance API error:', error);
+    }
+
+    // Fallback: Conservative risk assessment
+    return {
+      provenanceScore: 50,
+      riskLevel: 'MEDIUM',
+      ltvAdjustment: 0,
+      fraudFlags: ['PROVENANCE_UNAVAILABLE'],
+    };
   }
 
   // --------------------------------------------------------------------------
