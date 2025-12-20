@@ -20,6 +20,7 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import { createHash } from 'crypto';
+import rateLimit from 'express-rate-limit';
 
 // ============================================
 // TYPES
@@ -147,6 +148,29 @@ function validateRequest(body: unknown): GoldenSpikeRequest {
 const app = express();
 app.use(express.json());
 
+// Basic API key auth + rate limiting
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+if (!ADMIN_API_KEY) {
+  console.warn('[WARN] ADMIN_API_KEY is not set. All requests will be rejected.');
+}
+
+const limiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // max requests per IP per window
+});
+app.use(limiter);
+
+function requireApiKey(req: Request, res: Response, next: NextFunction) {
+  if (!ADMIN_API_KEY) {
+    return res.status(503).json({ error: 'Service not configured' });
+  }
+  const headerKey = req.headers['x-api-key'];
+  if (headerKey !== ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return next();
+}
+
 /**
  * GET /health
  * Health check endpoint
@@ -159,7 +183,7 @@ app.get('/health', (_req: Request, res: Response) => {
  * POST /v1/transactions/golden-spike
  * Deterministic capital decision
  */
-app.post('/v1/transactions/golden-spike', (req: Request, res: Response) => {
+app.post('/v1/transactions/golden-spike', requireApiKey, (req: Request, res: Response) => {
   try {
     // Validate request - FAIL LOUDLY
     const validatedRequest = validateRequest(req.body);
@@ -180,6 +204,65 @@ app.post('/v1/transactions/golden-spike', (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
     });
   }
+});
+
+/**
+ * POST /webhooks/claimsiq
+ * Receive ClaimsIQ PAY decisions and initiate payouts
+ * 
+ * ClaimsIQ → Capital pipeline:
+ * 1. ClaimsIQ issues PAY decision
+ * 2. ClaimsIQ POSTs to this webhook
+ * 3. Capital verifies seal and initiates payout
+ */
+app.post('/webhooks/claimsiq', (req: Request, res: Response) => {
+  const signature = req.headers['x-claimsiq-signature'] as string;
+  const webhookSecret = process.env.CLAIMSIQ_WEBHOOK_SECRET;
+  
+  // Verify webhook secret is configured
+  if (!webhookSecret) {
+    console.warn('[WEBHOOK] CLAIMSIQ_WEBHOOK_SECRET not configured');
+    return res.status(503).json({ error: 'Webhook not configured' });
+  }
+
+  // Verify signature
+  const payload = JSON.stringify(req.body);
+  const expectedSig = createHash('sha256')
+    .update(payload + webhookSecret)
+    .digest('hex');
+  
+  if (signature !== expectedSig) {
+    console.error('[WEBHOOK] Invalid signature from ClaimsIQ');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  const { event_type, decision } = req.body;
+
+  // Only process PAY decisions
+  if (event_type !== 'DECISION_ISSUED') {
+    return res.status(200).json({ message: 'Event type ignored' });
+  }
+
+  if (!decision || decision.status !== 'PAY') {
+    return res.status(200).json({ message: 'Non-PAY decision ignored' });
+  }
+
+  // Log the decision
+  const claimId = decision.claim_id;
+  const amountCents = decision.amount_approved_cents || 0;
+  
+  console.log(`[WEBHOOK] PAY decision received | claim_id=${claimId} | amount=${amountCents} cents`);
+
+  // TODO: In production, hand off to PayoutService
+  // For now, log and acknowledge
+  console.log(`[WEBHOOK] Payout queued for claim ${claimId}`);
+
+  return res.status(202).json({
+    status: 'accepted',
+    claim_id: claimId,
+    payout_status: 'QUEUED',
+    received_at: new Date().toISOString(),
+  });
 });
 
 /**
@@ -210,6 +293,7 @@ app.listen(PORT, () => {
   console.log('[Boot] Endpoints:');
   console.log(`  - GET  /health`);
   console.log(`  - POST /v1/transactions/golden-spike`);
+  console.log(`  - POST /webhooks/claimsiq`);
   console.log('\n[Boot] PROVENIQ CAPITAL ONLINE');
 });
 
