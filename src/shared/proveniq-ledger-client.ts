@@ -1,13 +1,19 @@
 /**
  * Proveniq Capital - External Ledger Client
  * 
- * Writes financial events to the PROVENIQ Ledger (port 8006) for
- * ecosystem-wide audit trail alongside the internal double-entry ledger.
+ * CANONICAL SCHEMA v1.0.0
+ * - Uses DOMAIN_NOUN_VERB_PAST event naming
+ * - Publishes to /api/v1/events/canonical endpoint
+ * - Includes idempotency_key for duplicate prevention
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 
-const LEDGER_API_URL = process.env.PROVENIQ_LEDGER_URL || 'http://localhost:8006/api/v1';
+const LEDGER_API_URL = process.env.PROVENIQ_LEDGER_URL || 'http://localhost:8006';
+const SCHEMA_VERSION = '1.0.0';
+const PRODUCER = 'capital';
+const PRODUCER_VERSION = '1.0.0';
 
 export type CapitalLedgerEventType =
   | 'CAPITAL_PREMIUM_RECEIVED'
@@ -26,46 +32,70 @@ export interface LedgerWriteResult {
   timestamp: string;
 }
 
+function hashPayload(payload: Record<string, unknown>): string {
+  const json = JSON.stringify(payload, Object.keys(payload).sort());
+  return createHash('sha256').update(json).digest('hex');
+}
+
 class ProveniqLedgerClient {
   /**
-   * Write event to Proveniq Ledger for ecosystem audit trail
+   * Write canonical event to Proveniq Ledger
+   * POST /api/v1/events/canonical
    */
   async writeEvent(
     eventType: CapitalLedgerEventType,
     assetId: string | null,
     actorId: string,
     payload: Record<string, unknown>,
-    correlationId?: string
+    correlationId?: string,
+    subject?: { policy_id?: string; loan_id?: string; claim_id?: string }
   ): Promise<LedgerWriteResult | null> {
-    const corrId = correlationId || `capital_${uuidv4().substring(0, 12)}`;
+    const corrId = correlationId || uuidv4();
+    const idempotencyKey = `capital_${uuidv4()}`;
+    const occurredAt = new Date().toISOString();
+    const canonicalHashHex = hashPayload(payload);
+
+    const canonicalEvent = {
+      schema_version: SCHEMA_VERSION,
+      event_type: eventType,
+      occurred_at: occurredAt,
+      committed_at: occurredAt,
+      correlation_id: corrId,
+      idempotency_key: idempotencyKey,
+      producer: PRODUCER,
+      producer_version: PRODUCER_VERSION,
+      subject: {
+        asset_id: assetId || 'SYSTEM',
+        ...subject,
+      },
+      payload: {
+        ...payload,
+        actor_id: actorId,
+      },
+      canonical_hash_hex: canonicalHashHex,
+    };
 
     try {
-      const response = await fetch(`${LEDGER_API_URL}/events`, {
+      const response = await fetch(`${LEDGER_API_URL}/api/v1/events/canonical`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source: 'capital',
-          event_type: eventType,
-          asset_id: assetId,
-          actor_id: actorId,
-          correlation_id: corrId,
-          payload,
-        }),
+        body: JSON.stringify(canonicalEvent),
       });
 
       if (!response.ok) {
-        console.warn(`[PROVENIQ_LEDGER] Write failed: ${response.status}`);
+        const errorText = await response.text();
+        console.warn(`[PROVENIQ_LEDGER] Write failed: ${response.status} ${errorText}`);
         return null;
       }
 
       const data = await response.json() as any;
-      console.log(`[PROVENIQ_LEDGER] Event ${eventType} written: ${data.data?.event?.eventId}`);
+      console.log(`[PROVENIQ_LEDGER] Event ${eventType} written: ${data.event_id}`);
       
       return {
-        eventId: data.data?.event?.eventId || data.event_id,
-        sequenceNumber: data.data?.event?.sequenceNumber || data.sequence_number,
-        entryHash: data.data?.event?.entryHash || data.entry_hash,
-        timestamp: data.data?.event?.createdAt || data.created_at,
+        eventId: data.event_id,
+        sequenceNumber: data.sequence_number,
+        entryHash: data.entry_hash,
+        timestamp: data.committed_at,
       };
     } catch (error) {
       console.error('[PROVENIQ_LEDGER] Write error:', error);
