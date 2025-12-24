@@ -44,7 +44,7 @@ async function bootstrap(): Promise<void> {
 
   // Get database pool (null in mock mode)
   const pool = getPool();
-  
+
   if (isMockMode()) {
     console.warn('[Boot] ⚠️  RUNNING IN MOCK MODE - No database connected');
     console.warn('[Boot] ⚠️  All data is in-memory and will be lost on restart');
@@ -105,7 +105,7 @@ async function bootstrap(): Promise<void> {
 
   // Root route
   app.get('/', (_req, res) => {
-    res.json({ 
+    res.json({
       service: 'Proveniq Capital',
       description: 'Settlement and Treasury Engine',
       version: '1.0.0',
@@ -120,12 +120,12 @@ async function bootstrap(): Promise<void> {
 
   // Health check (public)
   app.get('/health', (_req, res) => {
-    res.json({ 
-      status: 'OK', 
-      service: 'proveniq-capital', 
+    res.json({
+      status: 'OK',
+      service: 'proveniq-capital',
       mode: isMockMode() ? 'MOCK' : 'LIVE',
       database_url_set: !!process.env.DATABASE_URL,
-      timestamp: new Date().toISOString() 
+      timestamp: new Date().toISOString()
     });
   });
 
@@ -161,20 +161,31 @@ async function bootstrap(): Promise<void> {
     console.log(`  - Admin: http://localhost:${port}/admin/*`);
   });
 
-  // Start claims polling (optional - can use webhooks instead)
+  // Start claims polling (Legacy)
   if (process.env.ENABLE_CLAIMS_POLLING === 'true') {
     const pollInterval = parseInt(process.env.CLAIMS_POLL_INTERVAL_MS || '30000', 10);
-    console.log(`[Boot] Starting claims polling (interval: ${pollInterval}ms)`);
+    console.log(`[Boot] Starting legacy claims polling (interval: ${pollInterval}ms)`);
     claimsListener.startPolling(pollInterval);
   }
+
+  // Start Ledger Worker (New Settlement Loop) - DISABLED per User Order
+  // Capital is Lending Only.
+  /*
+  if (process.env.ENABLE_LEDGER_WORKER !== 'false') {
+    console.log('[Boot] Starting Ledger Settlement Worker...');
+    // Dynamic import to avoid circular dep issues during boot if any
+    import('./workers/ledgerListener').then(w => w.startCapitalWorker());
+  }
+  */
+
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\n[Shutdown] Received ${signal}, shutting down gracefully...`);
-    
+
     // Stop claims polling
     claimsListener.stopPolling();
-    
+
     // Close server
     server.close(() => {
       console.log('[Shutdown] HTTP server closed');
