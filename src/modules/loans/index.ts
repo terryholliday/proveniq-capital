@@ -9,4 +9,5 @@ export * from './types';
 export * from './loan-types';
 export * from './covenants';
 export * from './origination.service';
+export * from './origination.repository';
 export { CollateralService, collateralService } from './collateral.service';

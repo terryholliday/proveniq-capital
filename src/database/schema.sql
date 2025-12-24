@@ -105,6 +105,170 @@ CREATE TABLE IF NOT EXISTS payout_transactions (
 );
 
 -- ============================================
+-- ORIGINATION ENGINE TABLES (Lending)
+-- ============================================
+
+-- Loan Applications
+CREATE TABLE IF NOT EXISTS loan_applications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    borrower_id VARCHAR(255) NOT NULL,
+    borrower_type VARCHAR(20) NOT NULL CHECK (borrower_type IN ('CONSUMER', 'LANDLORD', 'BUSINESS')),
+    source_app VARCHAR(20) NOT NULL CHECK (source_app IN ('HOME', 'PROPERTIES', 'OPS')),
+    product_type VARCHAR(50) NOT NULL CHECK (product_type IN (
+        'ASSET_BACKED_CONSUMER', 'ASSET_BACKED_VEHICLE', 
+        'PROPERTY_BRIDGE', 'PROPERTY_RENOVATION',
+        'EQUIPMENT_FINANCE', 'INVENTORY_LINE'
+    )),
+    
+    -- Request
+    requested_amount_cents BIGINT NOT NULL CHECK (requested_amount_cents > 0),
+    requested_term_days INTEGER NOT NULL CHECK (requested_term_days > 0),
+    payment_frequency VARCHAR(20) NOT NULL DEFAULT 'MONTHLY' CHECK (payment_frequency IN ('WEEKLY', 'BIWEEKLY', 'MONTHLY')),
+    purpose TEXT NOT NULL,
+    
+    -- Collateral (PROVENIQ Asset IDs from Core)
+    collateral_asset_ids TEXT[] NOT NULL,
+    
+    -- Calculated (set during underwriting)
+    approved_amount_cents BIGINT,
+    approved_term_days INTEGER,
+    apr_bps INTEGER,  -- Basis points (500 = 5.00%)
+    origination_fee_cents BIGINT,
+    monthly_payment_cents BIGINT,
+    total_interest_cents BIGINT,
+    ltv_ratio DECIMAL(5,4),
+    
+    -- Status
+    status VARCHAR(30) NOT NULL DEFAULT 'DRAFT' CHECK (status IN (
+        'DRAFT', 'PENDING_VERIFICATION', 'PENDING_APPROVAL', 'APPROVED',
+        'ACTIVE', 'DELINQUENT', 'DEFAULT', 'PAID_OFF', 'RECOVERED', 'CANCELLED'
+    )),
+    risk_score INTEGER CHECK (risk_score >= 0 AND risk_score <= 100),
+    underwriting_notes TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    submitted_at TIMESTAMPTZ,
+    approved_at TIMESTAMPTZ,
+    funded_at TIMESTAMPTZ,
+    maturity_date TIMESTAMPTZ
+);
+
+-- Active Loans
+CREATE TABLE IF NOT EXISTS loans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    application_id UUID NOT NULL REFERENCES loan_applications(id),
+    borrower_id VARCHAR(255) NOT NULL,
+    product_type VARCHAR(50) NOT NULL,
+    
+    -- Terms
+    principal_cents BIGINT NOT NULL CHECK (principal_cents > 0),
+    apr_bps INTEGER NOT NULL,
+    term_days INTEGER NOT NULL,
+    payment_frequency VARCHAR(20) NOT NULL,
+    monthly_payment_cents BIGINT NOT NULL,
+    
+    -- Balances
+    outstanding_principal_cents BIGINT NOT NULL,
+    accrued_interest_cents BIGINT NOT NULL DEFAULT 0,
+    total_paid_cents BIGINT NOT NULL DEFAULT 0,
+    
+    -- Collateral
+    collateral_asset_ids TEXT[] NOT NULL,
+    total_collateral_value_cents BIGINT NOT NULL,
+    current_ltv_ratio DECIMAL(5,4) NOT NULL,
+    
+    -- Status
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN (
+        'ACTIVE', 'DELINQUENT', 'DEFAULT', 'PAID_OFF', 'RECOVERED'
+    )),
+    days_delinquent INTEGER NOT NULL DEFAULT 0,
+    next_payment_due_date TIMESTAMPTZ NOT NULL,
+    
+    -- Timestamps
+    funded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    maturity_date TIMESTAMPTZ NOT NULL,
+    last_payment_date TIMESTAMPTZ,
+    paid_off_at TIMESTAMPTZ,
+    defaulted_at TIMESTAMPTZ
+);
+
+-- Loan Payments
+CREATE TABLE IF NOT EXISTS loan_payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    loan_id UUID NOT NULL REFERENCES loans(id),
+    
+    -- Payment details
+    amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
+    principal_portion_cents BIGINT NOT NULL,
+    interest_portion_cents BIGINT NOT NULL,
+    
+    -- Source
+    payment_method VARCHAR(30) NOT NULL CHECK (payment_method IN ('ACH', 'CARD', 'WIRE', 'CRYPTO')),
+    external_reference VARCHAR(255),
+    
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'CLEARED', 'FAILED', 'REVERSED')),
+    
+    -- Ledger linkage
+    ledger_transaction_id UUID REFERENCES ledger_transactions(id),
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cleared_at TIMESTAMPTZ
+);
+
+-- Covenants
+CREATE TABLE IF NOT EXISTS loan_covenants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    loan_id UUID NOT NULL REFERENCES loans(id),
+    covenant_type VARCHAR(30) NOT NULL CHECK (covenant_type IN (
+        'LTV_MAX', 'ANCHOR_SEAL_INTACT', 'INSURANCE_ACTIVE',
+        'CUSTODY_UNCHANGED', 'SERVICE_CURRENT', 'LOCATION_BOUND', 'CONDITION_MAINTAINED'
+    )),
+    
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SATISFIED', 'BREACHED', 'WAIVED')),
+    
+    -- Thresholds
+    threshold_value DECIMAL(10,4),
+    threshold_location TEXT,
+    
+    -- Current state
+    current_value DECIMAL(10,4),
+    last_checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Breach info
+    breached_at TIMESTAMPTZ,
+    breach_reason TEXT,
+    grace_period_ends_at TIMESTAMPTZ,
+    
+    -- Resolution
+    cured_at TIMESTAMPTZ,
+    waived_at TIMESTAMPTZ,
+    waived_by VARCHAR(255),
+    waiver_reason TEXT,
+    
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Covenant Events (Audit Trail)
+CREATE TABLE IF NOT EXISTS covenant_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    covenant_id UUID NOT NULL REFERENCES loan_covenants(id),
+    loan_id UUID NOT NULL REFERENCES loans(id),
+    
+    event_type VARCHAR(20) NOT NULL CHECK (event_type IN ('CHECK', 'BREACH', 'CURE', 'WAIVE', 'ESCALATE')),
+    previous_status VARCHAR(20) NOT NULL,
+    new_status VARCHAR(20) NOT NULL,
+    
+    ledger_event_id VARCHAR(255),
+    details JSONB,
+    
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================
 -- INDEXES
 -- ============================================
 
@@ -127,6 +291,37 @@ CREATE INDEX IF NOT EXISTS idx_payout_claim ON payout_transactions(claim_id);
 CREATE INDEX IF NOT EXISTS idx_payout_status ON payout_transactions(status);
 CREATE INDEX IF NOT EXISTS idx_payout_created ON payout_transactions(created_at);
 CREATE INDEX IF NOT EXISTS idx_payout_idempotency ON payout_transactions(idempotency_key);
+
+-- Loan Application indexes
+CREATE INDEX IF NOT EXISTS idx_loan_app_borrower ON loan_applications(borrower_id);
+CREATE INDEX IF NOT EXISTS idx_loan_app_status ON loan_applications(status);
+CREATE INDEX IF NOT EXISTS idx_loan_app_product ON loan_applications(product_type);
+CREATE INDEX IF NOT EXISTS idx_loan_app_source ON loan_applications(source_app);
+CREATE INDEX IF NOT EXISTS idx_loan_app_created ON loan_applications(created_at);
+
+-- Loan indexes
+CREATE INDEX IF NOT EXISTS idx_loans_borrower ON loans(borrower_id);
+CREATE INDEX IF NOT EXISTS idx_loans_application ON loans(application_id);
+CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status);
+CREATE INDEX IF NOT EXISTS idx_loans_maturity ON loans(maturity_date);
+CREATE INDEX IF NOT EXISTS idx_loans_next_payment ON loans(next_payment_due_date);
+CREATE INDEX IF NOT EXISTS idx_loans_delinquent ON loans(days_delinquent) WHERE days_delinquent > 0;
+
+-- Loan Payment indexes
+CREATE INDEX IF NOT EXISTS idx_loan_payments_loan ON loan_payments(loan_id);
+CREATE INDEX IF NOT EXISTS idx_loan_payments_status ON loan_payments(status);
+CREATE INDEX IF NOT EXISTS idx_loan_payments_created ON loan_payments(created_at);
+
+-- Covenant indexes
+CREATE INDEX IF NOT EXISTS idx_covenants_loan ON loan_covenants(loan_id);
+CREATE INDEX IF NOT EXISTS idx_covenants_type ON loan_covenants(covenant_type);
+CREATE INDEX IF NOT EXISTS idx_covenants_status ON loan_covenants(status);
+CREATE INDEX IF NOT EXISTS idx_covenants_breached ON loan_covenants(breached_at) WHERE status = 'BREACHED';
+
+-- Covenant Event indexes
+CREATE INDEX IF NOT EXISTS idx_covenant_events_covenant ON covenant_events(covenant_id);
+CREATE INDEX IF NOT EXISTS idx_covenant_events_loan ON covenant_events(loan_id);
+CREATE INDEX IF NOT EXISTS idx_covenant_events_type ON covenant_events(event_type);
 
 -- ============================================
 -- VIEWS (Computed from immutable entries)
