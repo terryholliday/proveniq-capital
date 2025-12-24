@@ -27,6 +27,7 @@ import { StripeIngressService } from './modules/premiums';
 
 // API
 import { createAdminRoutes, createWebhookRoutes, createStripeWebhookRoutes, adminAuthMiddleware, webhookAuthMiddleware } from './api';
+import originationRoutes from './api/origination.routes';
 
 async function bootstrap(): Promise<void> {
   console.log('='.repeat(60));
@@ -142,6 +143,9 @@ async function bootstrap(): Promise<void> {
 
   // Admin routes (API key protected)
   app.use('/admin', adminAuthMiddleware, createAdminRoutes(treasuryService, ledgerService, payoutService));
+
+  // Origination Engine routes (API key protected)
+  app.use('/api/v1/origination', adminAuthMiddleware, originationRoutes);
 
   // Error handler
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
