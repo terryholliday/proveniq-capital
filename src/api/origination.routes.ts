@@ -41,12 +41,13 @@ router.get('/products', (_req: Request, res: Response) => {
  * GET /origination/products/:type
  * Get details for a specific loan product.
  */
-router.get('/products/:type', (req: Request, res: Response) => {
+router.get('/products/:type', (req: Request, res: Response): void => {
   const productType = req.params.type as LoanProductType;
   const product = LOAN_PRODUCTS[productType];
 
   if (!product) {
-    return res.status(404).json({ error: 'Product not found' });
+    res.status(404).json({ error: 'Product not found' });
+    return;
   }
 
   res.json({ product });
@@ -60,7 +61,7 @@ router.get('/products/:type', (req: Request, res: Response) => {
  * POST /origination/preview
  * Get a loan offer preview without creating an application.
  */
-router.post('/preview', async (req: Request, res: Response) => {
+router.post('/preview', async (req: Request, res: Response): Promise<void> => {
   const {
     productType,
     requestedAmountCents,
@@ -69,9 +70,10 @@ router.post('/preview', async (req: Request, res: Response) => {
   } = req.body;
 
   if (!productType || !requestedAmountCents || !collateralValueCents) {
-    return res.status(400).json({
+    res.status(400).json({
       error: 'Missing required fields: productType, requestedAmountCents, collateralValueCents',
     });
+    return;
   }
 
   const result = await origination.previewOffer(
@@ -82,7 +84,8 @@ router.post('/preview', async (req: Request, res: Response) => {
   );
 
   if (!result.success) {
-    return res.status(400).json({ error: result.error });
+    res.status(400).json({ error: result.error });
+    return;
   }
 
   res.json({
@@ -99,7 +102,7 @@ router.post('/preview', async (req: Request, res: Response) => {
  * POST /origination/applications
  * Create a new loan application.
  */
-router.post('/applications', async (req: Request, res: Response) => {
+router.post('/applications', async (req: Request, res: Response): Promise<void> => {
   const request: OriginationRequest = {
     borrowerId: req.body.borrowerId,
     borrowerType: req.body.borrowerType,
@@ -115,10 +118,11 @@ router.post('/applications', async (req: Request, res: Response) => {
   const result = await origination.createApplication(request);
 
   if (!result.success) {
-    return res.status(400).json({
+    res.status(400).json({
       error: result.error,
       validationErrors: result.validationErrors,
     });
+    return;
   }
 
   res.status(201).json({ application: result.application });
@@ -128,7 +132,7 @@ router.post('/applications', async (req: Request, res: Response) => {
  * POST /origination/applications/:id/submit
  * Submit application for underwriting.
  */
-router.post('/applications/:id/submit', async (req: Request, res: Response) => {
+router.post('/applications/:id/submit', async (req: Request, res: Response): Promise<void> => {
   const applicationId = req.params.id;
   const {
     collateralValueCents,
@@ -139,7 +143,8 @@ router.post('/applications/:id/submit', async (req: Request, res: Response) => {
   } = req.body;
 
   if (!collateralValueCents) {
-    return res.status(400).json({ error: 'collateralValueCents is required' });
+    res.status(400).json({ error: 'collateralValueCents is required' });
+    return;
   }
 
   const result = await origination.submitForUnderwriting(
@@ -152,11 +157,12 @@ router.post('/applications/:id/submit', async (req: Request, res: Response) => {
   );
 
   if (!result.approved) {
-    return res.status(200).json({
+    res.status(200).json({
       approved: false,
       application: result.application,
       declineReasons: result.declineReasons,
     });
+    return;
   }
 
   res.json({
@@ -171,13 +177,14 @@ router.post('/applications/:id/submit', async (req: Request, res: Response) => {
  * POST /origination/applications/:id/fund
  * Fund an approved loan (after borrower accepts).
  */
-router.post('/applications/:id/fund', async (req: Request, res: Response) => {
+router.post('/applications/:id/fund', async (req: Request, res: Response): Promise<void> => {
   const applicationId = req.params.id;
 
   const result = await origination.fundLoan(applicationId);
 
   if (!result.success) {
-    return res.status(400).json({ error: result.error });
+    res.status(400).json({ error: result.error });
+    return;
   }
 
   res.status(201).json({
@@ -195,7 +202,7 @@ router.post('/applications/:id/fund', async (req: Request, res: Response) => {
  * GET /origination/loans/:id
  * Get loan details.
  */
-router.get('/loans/:id', async (req: Request, res: Response) => {
+router.get('/loans/:id', async (_req: Request, res: Response): Promise<void> => {
   // TODO: Implement loan retrieval
   res.status(501).json({ error: 'Not implemented' });
 });
@@ -204,7 +211,7 @@ router.get('/loans/:id', async (req: Request, res: Response) => {
  * GET /origination/loans/:id/covenants
  * Get covenant status for a loan.
  */
-router.get('/loans/:id/covenants', async (req: Request, res: Response) => {
+router.get('/loans/:id/covenants', async (_req: Request, res: Response): Promise<void> => {
   // TODO: Implement covenant status retrieval
   res.status(501).json({ error: 'Not implemented' });
 });
@@ -213,7 +220,7 @@ router.get('/loans/:id/covenants', async (req: Request, res: Response) => {
  * POST /origination/loans/:id/payments
  * Record a payment.
  */
-router.post('/loans/:id/payments', async (req: Request, res: Response) => {
+router.post('/loans/:id/payments', async (_req: Request, res: Response): Promise<void> => {
   // TODO: Implement payment recording
   res.status(501).json({ error: 'Not implemented' });
 });

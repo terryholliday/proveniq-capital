@@ -10,7 +10,6 @@ import {
   LoanApplication,
   Loan,
   LoanProductType,
-  LoanStatus,
   PaymentFrequency,
   LOAN_PRODUCTS,
   RiskPricingInput,
