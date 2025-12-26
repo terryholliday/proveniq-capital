@@ -8,6 +8,7 @@ import { Router, Request, Response } from 'express';
 import { getOriginationService, OriginationRequest } from '../modules/loans/origination.service';
 import { LOAN_PRODUCTS, LoanProductType } from '../modules/loans/loan-types';
 import { coreClient } from '../core/core-client';
+import { getAgentOrchestrator } from '../agents/orchestrator';
 
 const router = Router();
 const origination = getOriginationService();
@@ -268,6 +269,102 @@ router.get('/loans/:id/covenants', async (_req: Request, res: Response): Promise
 router.post('/loans/:id/payments', async (_req: Request, res: Response): Promise<void> => {
   // TODO: Implement payment recording
   res.status(501).json({ error: 'Not implemented' });
+});
+
+// ============================================================================
+// AI AGENTS
+// ============================================================================
+
+const agentOrchestrator = getAgentOrchestrator();
+
+/**
+ * POST /origination/agents/enrich
+ * Run Data Architect to enrich a loan application with external data.
+ */
+router.post('/agents/enrich', async (req: Request, res: Response): Promise<void> => {
+  const { applicationId, borrowerId, collateralAssetIds, requestedAmountCents } = req.body;
+
+  if (!applicationId || !borrowerId || !collateralAssetIds) {
+    res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+
+  const result = await agentOrchestrator.processApplication(
+    applicationId,
+    borrowerId,
+    collateralAssetIds,
+    requestedAmountCents || 0
+  );
+
+  if (!result.success) {
+    res.status(500).json({ error: 'Agent processing failed', logs: result.agentLogs });
+    return;
+  }
+
+  res.json({
+    enrichedApplication: result.enrichedApplication,
+    processingTimeMs: result.processingTimeMs,
+    logs: result.agentLogs,
+  });
+});
+
+/**
+ * POST /origination/agents/outcome
+ * Record loan outcome for ML training (Truth Database).
+ */
+router.post('/agents/outcome', async (req: Request, res: Response): Promise<void> => {
+  const { loanId, outcome, details } = req.body;
+
+  if (!loanId || !outcome) {
+    res.status(400).json({ error: 'loanId and outcome required' });
+    return;
+  }
+
+  const validOutcomes = [
+    'REPAID_FULL', 'REPAID_EARLY', 'REPAID_LATE',
+    'DEFAULTED', 'DEFAULTED_RECOVERED',
+    'FRAUD_CONFIRMED', 'FRAUD_SUSPECTED',
+    'RESTRUCTURED', 'ACTIVE'
+  ];
+
+  if (!validOutcomes.includes(outcome)) {
+    res.status(400).json({ error: `Invalid outcome. Must be one of: ${validOutcomes.join(', ')}` });
+    return;
+  }
+
+  const record = await agentOrchestrator.recordOutcome(loanId, outcome, details || {});
+  res.json({ record });
+});
+
+/**
+ * GET /origination/agents/statistics
+ * Get outcome statistics from Truth Database.
+ */
+router.get('/agents/statistics', async (_req: Request, res: Response): Promise<void> => {
+  const stats = agentOrchestrator.getOutcomeStatistics();
+  res.json(stats);
+});
+
+/**
+ * GET /origination/agents/training-data
+ * Export ML training dataset.
+ */
+router.get('/agents/training-data', async (_req: Request, res: Response): Promise<void> => {
+  const dataset = agentOrchestrator.getTrainingDataset();
+  res.json(dataset);
+});
+
+/**
+ * POST /origination/agents/security-audit
+ * Run Risk Officer adversarial audit (admin only).
+ */
+router.post('/agents/security-audit', async (req: Request, res: Response): Promise<void> => {
+  const { underwritingEndpoint } = req.body;
+  
+  const endpoint = underwritingEndpoint || `http://localhost:${process.env.PORT || 3001}/origination`;
+  
+  const report = await agentOrchestrator.runSecurityAudit(endpoint);
+  res.json(report);
 });
 
 export default router;
