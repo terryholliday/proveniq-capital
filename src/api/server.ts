@@ -21,6 +21,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { createHash } from 'crypto';
 import rateLimit from 'express-rate-limit';
+import portalRoutes from '../portal/routes/portal.routes';
+import originationRoutes from './origination.routes';
 
 // ============================================
 // TYPES
@@ -179,6 +181,16 @@ app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ ok: true });
 });
 
+// ============================================
+// BORROWER PORTAL (Public - no API key required)
+// ============================================
+app.use('/portal', portalRoutes);
+
+// ============================================
+// ORIGINATION API (Internal)
+// ============================================
+app.use('/origination', originationRoutes);
+
 /**
  * POST /v1/transactions/golden-spike
  * Deterministic capital decision
@@ -294,6 +306,8 @@ app.listen(PORT, () => {
   console.log(`  - GET  /health`);
   console.log(`  - POST /v1/transactions/golden-spike`);
   console.log(`  - POST /webhooks/claimsiq`);
+  console.log(`  - /portal/* (Borrower Portal)`);
+  console.log(`  - /origination/* (Loan Origination)`);
   console.log('\n[Boot] PROVENIQ CAPITAL ONLINE');
 });
 
