@@ -7,6 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { getOriginationService, OriginationRequest } from '../modules/loans/origination.service';
 import { LOAN_PRODUCTS, LoanProductType } from '../modules/loans/loan-types';
+import { coreClient } from '../core/core-client';
 
 const router = Router();
 const origination = getOriginationService();
@@ -140,6 +141,8 @@ router.post('/applications/:id/submit', async (req: Request, res: Response): Pro
     hasInsurance = false,
     hasAnchor = false,
     isVerified = false,
+    collateralAssetIds = [],
+    borrowerId,
   } = req.body;
 
   if (!collateralValueCents) {
@@ -147,10 +150,52 @@ router.post('/applications/:id/submit', async (req: Request, res: Response): Pro
     return;
   }
 
+  // P0: Get Core LTV and collateral health scores
+  let coreLtvResult = null;
+  let coreCollateralHealth = null;
+  let coreBorrowerRisk = null;
+  
+  try {
+    // Calculate LTV via Core (use first collateral asset)
+    if (collateralAssetIds.length > 0) {
+      const primaryAssetId = collateralAssetIds[0];
+      coreLtvResult = await coreClient.calculateLTV(
+        primaryAssetId,
+        collateralValueCents / 100,
+        'collateral' // category
+      );
+      if (coreLtvResult) {
+        console.log(`[Core] LTV: ${coreLtvResult.ltv}%, Max loan: $${coreLtvResult.maxLoanAmount}`);
+      }
+
+      // Get collateral health score
+      coreCollateralHealth = await coreClient.getCollateralHealthScore(
+        primaryAssetId,
+        'collateral'
+      );
+      if (coreCollateralHealth) {
+        console.log(`[Core] Collateral health: ${coreCollateralHealth.grade} (${coreCollateralHealth.overallScore})`);
+      }
+    }
+
+    // Get borrower risk from Core
+    if (borrowerId) {
+      coreBorrowerRisk = await coreClient.getBorrowerRisk(borrowerId, collateralValueCents / 100);
+      if (coreBorrowerRisk) {
+        console.log(`[Core] Borrower risk: ${coreBorrowerRisk.riskLevel} (${coreBorrowerRisk.fraudScore})`);
+      }
+    }
+  } catch (e) {
+    console.warn('[Core] LTV/collateral scoring unavailable');
+  }
+
+  // Use Core risk score if available, otherwise use provided score
+  const effectiveRiskScore = coreBorrowerRisk?.fraudScore ?? borrowerRiskScore ?? 30;
+
   const result = await origination.submitForUnderwriting(
     applicationId,
     collateralValueCents,
-    borrowerRiskScore || 30,
+    effectiveRiskScore,
     hasInsurance,
     hasAnchor,
     isVerified,
