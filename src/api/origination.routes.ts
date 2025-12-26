@@ -9,9 +9,11 @@ import { getOriginationService, OriginationRequest } from '../modules/loans/orig
 import { LOAN_PRODUCTS, LoanProductType } from '../modules/loans/loan-types';
 import { coreClient } from '../core/core-client';
 import { getAgentOrchestrator } from '../agents/orchestrator';
+import { getLenderMatchingService } from '../modules/loans/lender-matching.service';
 
 const router = Router();
 const origination = getOriginationService();
+const lenderMatching = getLenderMatchingService();
 
 // ============================================================================
 // PRODUCT CATALOG
@@ -117,6 +119,30 @@ router.post('/applications', async (req: Request, res: Response): Promise<void> 
     collateralAssetIds: req.body.collateralAssetIds,
   };
 
+  // P0: Verify ownership of collateral before creating application
+  const ownershipIssues: string[] = [];
+  for (const assetId of req.body.collateralAssetIds || []) {
+    try {
+      const ownership = await coreClient.verifyOwnership(assetId, req.body.borrowerId);
+      if (!ownership.verified) {
+        ownershipIssues.push(`Asset ${assetId} not owned by borrower`);
+        console.log(`[Core] Ownership mismatch: ${assetId} owned by ${ownership.ownerId}, not ${req.body.borrowerId}`);
+      } else {
+        console.log(`[Core] Ownership verified: ${assetId} → ${req.body.borrowerId}`);
+      }
+    } catch (e) {
+      console.warn(`[Core] Ownership verification unavailable for ${assetId}`);
+    }
+  }
+
+  if (ownershipIssues.length > 0) {
+    res.status(400).json({
+      error: 'Collateral ownership verification failed',
+      ownershipIssues,
+    });
+    return;
+  }
+
   const result = await origination.createApplication(request);
 
   if (!result.success) {
@@ -148,6 +174,30 @@ router.post('/applications/:id/submit', async (req: Request, res: Response): Pro
 
   if (!collateralValueCents) {
     res.status(400).json({ error: 'collateralValueCents is required' });
+    return;
+  }
+
+  // P0: Check custody state of collateral
+  let custodyIssues: string[] = [];
+  for (const assetId of collateralAssetIds) {
+    try {
+      const custody = await coreClient.getCustodyState(assetId);
+      if (custody) {
+        console.log(`[Core] Custody state: ${assetId} → ${custody.currentState} (secured: ${custody.isSecured})`);
+        if (custody.currentState === 'SOLD') {
+          custodyIssues.push(`Asset ${assetId} has been sold - cannot use as collateral`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[Core] Custody check unavailable for ${assetId}`);
+    }
+  }
+
+  if (custodyIssues.length > 0) {
+    res.status(400).json({
+      error: 'Collateral custody check failed',
+      custodyIssues,
+    });
     return;
   }
 
@@ -365,6 +415,155 @@ router.post('/agents/security-audit', async (req: Request, res: Response): Promi
   
   const report = await agentOrchestrator.runSecurityAudit(endpoint);
   res.json(report);
+});
+
+// ============================================================================
+// LENDER MATCHING (Phase 4)
+// ============================================================================
+
+/**
+ * GET /origination/lenders
+ * List all active lenders in the network.
+ */
+router.get('/lenders', async (_req: Request, res: Response): Promise<void> => {
+  const lenders = await lenderMatching.getLenders();
+  
+  // Remove sensitive capacity info for public endpoint
+  const sanitized = lenders.map(l => ({
+    lenderId: l.lenderId,
+    name: l.name,
+    type: l.type,
+    minLoanAmount: l.minLoanAmount,
+    maxLoanAmount: l.maxLoanAmount,
+    minTermDays: l.minTermDays,
+    maxTermDays: l.maxTermDays,
+    maxLTV: l.maxLTV,
+    acceptedCollateralTypes: l.acceptedCollateralTypes,
+    acceptedPurposes: l.acceptedPurposes,
+    acceptingApplications: l.acceptingApplications,
+  }));
+
+  res.json({ lenders: sanitized, count: sanitized.length });
+});
+
+/**
+ * GET /origination/lenders/:id
+ * Get details for a specific lender.
+ */
+router.get('/lenders/:id', async (req: Request, res: Response): Promise<void> => {
+  const lender = await lenderMatching.getLender(req.params.id);
+  
+  if (!lender) {
+    res.status(404).json({ error: 'Lender not found' });
+    return;
+  }
+
+  res.json({ lender });
+});
+
+/**
+ * POST /origination/match
+ * Find matching lenders for a loan application.
+ */
+router.post('/match', async (req: Request, res: Response): Promise<void> => {
+  const {
+    applicationId,
+    requestedAmountCents,
+    requestedTermDays,
+    collateralType,
+    collateralValueCents,
+    borrowerRiskScore,
+    purpose,
+  } = req.body;
+
+  if (!applicationId || !requestedAmountCents || !collateralValueCents) {
+    res.status(400).json({
+      error: 'Missing required fields: applicationId, requestedAmountCents, collateralValueCents',
+    });
+    return;
+  }
+
+  const ltv = (requestedAmountCents / collateralValueCents) * 100;
+
+  const result = await lenderMatching.matchLenders({
+    applicationId,
+    requestedAmountCents,
+    requestedTermDays: requestedTermDays || 180,
+    collateralType: collateralType || 'electronics',
+    collateralValueCents,
+    borrowerRiskScore: borrowerRiskScore || 30,
+    purpose: purpose || 'personal',
+    ltv,
+  });
+
+  res.json(result);
+});
+
+/**
+ * POST /origination/route
+ * Route an application to a specific lender.
+ */
+router.post('/route', async (req: Request, res: Response): Promise<void> => {
+  const { applicationId, lenderId } = req.body;
+
+  if (!applicationId || !lenderId) {
+    res.status(400).json({ error: 'applicationId and lenderId required' });
+    return;
+  }
+
+  const result = await lenderMatching.routeToLender(applicationId, lenderId);
+
+  if (!result.success) {
+    res.status(400).json({ error: result.message });
+    return;
+  }
+
+  res.json(result);
+});
+
+/**
+ * POST /origination/auto-match
+ * Find best lender and auto-route if match score > 80.
+ */
+router.post('/auto-match', async (req: Request, res: Response): Promise<void> => {
+  const {
+    applicationId,
+    requestedAmountCents,
+    requestedTermDays,
+    collateralType,
+    collateralValueCents,
+    borrowerRiskScore,
+    purpose,
+  } = req.body;
+
+  if (!applicationId || !requestedAmountCents || !collateralValueCents) {
+    res.status(400).json({
+      error: 'Missing required fields',
+    });
+    return;
+  }
+
+  const ltv = (requestedAmountCents / collateralValueCents) * 100;
+
+  const matchResult = await lenderMatching.matchLenders({
+    applicationId,
+    requestedAmountCents,
+    requestedTermDays: requestedTermDays || 180,
+    collateralType: collateralType || 'electronics',
+    collateralValueCents,
+    borrowerRiskScore: borrowerRiskScore || 30,
+    purpose: purpose || 'personal',
+    ltv,
+  });
+
+  if (matchResult.autoRouted && matchResult.routedToLenderId) {
+    await lenderMatching.routeToLender(applicationId, matchResult.routedToLenderId);
+  }
+
+  res.json({
+    ...matchResult,
+    action: matchResult.autoRouted ? 'AUTO_ROUTED' : 'MANUAL_SELECTION_REQUIRED',
+  });
 });
 
 export default router;
