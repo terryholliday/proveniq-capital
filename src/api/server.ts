@@ -23,6 +23,7 @@ import { createHash } from 'crypto';
 import rateLimit from 'express-rate-limit';
 import portalRoutes from '../portal/routes/portal.routes';
 import originationRoutes from './origination.routes';
+import lenderRoutes from '../modules/lender/routes/lender.routes';
 
 // ============================================
 // TYPES
@@ -191,6 +192,11 @@ app.use('/portal', portalRoutes);
 // ============================================
 app.use('/origination', originationRoutes);
 
+// ============================================
+// LENDER ANALYTICS (Partner Dashboard)
+// ============================================
+app.use('/lenders', lenderRoutes);
+
 /**
  * POST /v1/transactions/golden-spike
  * Deterministic capital decision
@@ -308,6 +314,7 @@ app.listen(PORT, () => {
   console.log(`  - POST /webhooks/claimsiq`);
   console.log(`  - /portal/* (Borrower Portal)`);
   console.log(`  - /origination/* (Loan Origination)`);
+  console.log(`  - /lenders/* (Lender Analytics)`);
   console.log('\n[Boot] PROVENIQ CAPITAL ONLINE');
 });
 
