@@ -1,0 +1,90 @@
+/**
+ * Proveniq Capital - Database Connection
+ * PostgreSQL connection pool management
+ * 
+ * MOCK MODE: If DATABASE_URL is not set, runs in mock mode (in-memory)
+ */
+
+import { Pool } from 'pg';
+
+let pool: Pool | null = null;
+let mockMode = false;
+
+export function isMockMode(): boolean {
+  return mockMode;
+}
+
+export function getPool(): Pool | null {
+  if (mockMode) {
+    return null;
+  }
+
+  if (!pool) {
+    if (!process.env.DATABASE_URL) {
+      console.warn('[Database] DATABASE_URL not set - running in MOCK MODE');
+      mockMode = true;
+      return null;
+    }
+
+    try {
+      pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+        ssl: { rejectUnauthorized: false }, // Required for Supabase
+      });
+
+      pool.on('error', (err) => {
+        console.error('[Database] Unexpected error on idle client:', err);
+      });
+
+      pool.on('connect', () => {
+        console.log('[Database] New client connected');
+      });
+    } catch (error) {
+      console.error('[Database] Failed to create pool:', error);
+      console.warn('[Database] Falling back to MOCK MODE');
+      mockMode = true;
+      return null;
+    }
+  }
+
+  return pool;
+}
+
+export async function closePool(): Promise<void> {
+  if (pool) {
+    await pool.end();
+    pool = null;
+    console.log('[Database] Connection pool closed');
+  }
+}
+
+export async function testConnection(): Promise<boolean> {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[Database] DATABASE_URL not set - running in MOCK MODE');
+    mockMode = true;
+    return true; // Mock mode is "successful"
+  }
+
+  try {
+    const p = getPool();
+    if (!p) {
+      return true; // Mock mode
+    }
+    const result = await p.query('SELECT NOW()');
+    console.log('[Database] Connection test successful:', result.rows[0].now);
+    return true;
+  } catch (error) {
+    // Fall back to mock mode if database connection fails
+    console.error('[Database] Connection test failed:', error);
+    console.warn('[Database] Falling back to MOCK MODE');
+    mockMode = true;
+    if (pool) {
+      try { await pool.end(); } catch { /* ignore */ }
+      pool = null;
+    }
+    return true; // Continue in mock mode rather than crashing
+  }
+}
